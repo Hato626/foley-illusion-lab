@@ -1,0 +1,15 @@
+{
+  "name": "foley-illusion-lab",
+  "version": "1.0.0",
+  "private": true,
+  "description": "离线声音错觉实验室：同声异景、拟音挑战和创作",
+  "license": "MIT",
+  "scripts": {
+    "start": "node server.cjs",
+    "test": "node --test tests/core.test.cjs",
+    "test:ui": "node tests/ui.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

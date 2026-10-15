@@ -1,0 +1,48 @@
+{
+  "format": "foley-illusion-lab",
+  "version": 1,
+  "title": "星星也会叮当作响",
+  "duration": 6,
+  "scene": 6,
+  "levelId": null,
+  "clips": [
+    {
+      "id": "clip-1792046438280-u8j7e",
+      "soundId": "s5",
+      "start": 1,
+      "trimStart": 0,
+      "trimEnd": 0.5,
+      "speed": 1.2,
+      "repeats": 1,
+      "gap": 1,
+      "gain": 0.65,
+      "lane": 0
+    },
+    {
+      "id": "clip-1792046438280-nbx0o",
+      "soundId": "s5",
+      "start": 2.5,
+      "trimStart": 0,
+      "trimEnd": 0.5,
+      "speed": 1,
+      "repeats": 1,
+      "gap": 1,
+      "gain": 0.65,
+      "lane": 1
+    },
+    {
+      "id": "clip-1792046438280-16wfp",
+      "soundId": "s5",
+      "start": 4,
+      "trimStart": 0,
+      "trimEnd": 0.5,
+      "speed": 1,
+      "repeats": 1,
+      "gap": 1,
+      "gain": 0.65,
+      "lane": 2
+    }
+  ],
+  "custom": [],
+  "note": "盲听像硬币；看到星空后像光点。"
+}
