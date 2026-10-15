@@ -1,39 +1,175 @@
-const {chromium}=require('playwright');
-const assert=require('node:assert/strict');
-const path=require('node:path');
-const fs=require('node:fs/promises');
-const {pathToFileURL}=require('node:url');
-(async()=>{
-  const out=path.join(__dirname,'../test-results');await fs.mkdir(out,{recursive:true});
-  const browser=await chromium.launch({headless:true,executablePath:process.env.FOLEY_BROWSER_PATH||undefined,args:['--autoplay-policy=no-user-gesture-required']});
-  const context=await browser.newContext({viewport:{width:1440,height:1200},acceptDownloads:true});
-  const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.goto(pathToFileURL(path.join(__dirname,'../index.html')).href);
-  await page.locator('#start-tutorial').click();
-  assert.equal(await page.locator('#levels button').count(),20);assert.equal(await page.locator('.sound-row').count(),40);
-  await page.locator('#add-time').fill('1.5');await page.locator('#add-clip').click();
-  await page.locator('#add-time').fill('3.5');await page.locator('#add-clip').click();
-  await page.locator('#check').click();assert.match(await page.locator('#result').textContent(),/全部满足/);
-  await page.locator('#play').click();await page.waitForTimeout(450);
-  const before=await page.evaluate(()=>FoleyApp.getPlayback());assert.ok(before.playing&&before.position>.15);
-  await page.locator('[data-view="b"]').click();const switched=await page.evaluate(()=>FoleyApp.getPlayback());assert.ok(switched.position>=before.position);assert.equal(switched.view,'b');
-  await page.locator('#play').click();const paused=await page.evaluate(()=>FoleyApp.getPlayback());await page.waitForTimeout(300);const still=await page.evaluate(()=>FoleyApp.getPlayback());assert.ok(Math.abs(paused.position-still.position)<.005);assert.ok(!still.playing);
-  await page.locator('#restart').click();const restarted=await page.evaluate(()=>FoleyApp.getPlayback());assert.ok(restarted.playing&&restarted.position<.3);await page.locator('#play').click();
-  for(let i=0;i<20;i++){await page.locator('#levels button').nth(i).click();await page.locator('#example').click();await page.locator('#check').click();assert.match(await page.locator('#result').textContent(),/全部满足/,`level ${i+1}`);}
-  assert.equal(await page.locator('#progress').textContent(),'20 / 20');
-  await page.locator('#levels button').nth(6).click();await page.locator('#example').click();await page.locator('[data-view="dual"]').click();
-  await page.locator('#free-mode').click();await page.locator('#free-title').fill('星星也会叮当作响');await page.locator('#free-title').press('Tab');await page.locator('#note').fill('盲听像硬币；看到星空后像光点。');
-  await page.locator('.clip-block').first().click();await page.locator('#field-speed').fill('1.2');await page.locator('#field-speed').press('Tab');
-  await page.locator('#check').click();assert.match(await page.locator('#result').textContent(),/结构有效/);
-  const wavPromise=page.waitForEvent('download');await page.locator('#export-wav').click();const wavDownload=await wavPromise;const wavPath=path.join(out,'example.wav');await wavDownload.saveAs(wavPath);const wav=await fs.readFile(wavPath);assert.equal(wav.toString('ascii',0,4),'RIFF');
-  const htmlPromise=page.waitForEvent('download');await page.locator('#export-html').click();const htmlDownload=await htmlPromise;const htmlPath=path.join(out,'standalone-example.html');await htmlDownload.saveAs(htmlPath);
-  const jsonPromise=page.waitForEvent('download');await page.locator('#export-project').click();const jsonDownload=await jsonPromise;const jsonPath=path.join(out,'example.foley.json');await jsonDownload.saveAs(jsonPath);
-  await page.screenshot({path:path.join(out,'desktop.png'),fullPage:true});
-  const oldTitle=await page.locator('#project-title').textContent();await page.locator('#project-file').setInputFiles({name:'broken.json',mimeType:'application/json',buffer:Buffer.from('{invalid')});await page.waitForFunction(()=>document.getElementById('toast').textContent.startsWith('导入失败'));assert.match(await page.locator('#toast').textContent(),/导入失败/);assert.equal(await page.locator('#project-title').textContent(),oldTitle);
-  await page.locator('#reset-project').click();assert.equal(await page.locator('.clip-block').count(),0);await page.locator('#undo').click();assert.ok(await page.locator('.clip-block').count()>0);
-  await page.locator('#project-file').setInputFiles(jsonPath);await page.waitForFunction(()=>document.getElementById('toast').textContent==='挑战包已导入。');assert.match(await page.locator('#toast').textContent(),/已导入/);
-  await page.reload();assert.equal(await page.locator('#project-title').textContent(),oldTitle);assert.equal(await page.locator('#note').inputValue(),'盲听像硬币；看到星空后像光点。');
-  const standalone=await context.newPage();standalone.on('pageerror',e=>errors.push(e.message));const requests=[];standalone.on('request',r=>requests.push(r.url()));await standalone.goto(pathToFileURL(htmlPath).href);await standalone.locator('#replay').click();await standalone.waitForTimeout(350);assert.ok(await standalone.locator('#audio').evaluate(a=>a.currentTime>.1&&!a.paused));await standalone.locator('[data-v="b"]').click();assert.match(await standalone.locator('#la').textContent(),/星星/);assert.ok(requests.every(u=>u.startsWith('file:')||u.startsWith('data:')));await standalone.screenshot({path:path.join(out,'standalone.png'),fullPage:true});
-  await page.locator('#audio-file').setInputFiles(wavPath);await page.waitForFunction(()=>FoleyApp.getProject().custom.length===1);await page.locator('#add-time').fill('0');await page.locator('#add-clip').click();assert.ok((await page.evaluate(()=>FoleyApp.getProject())).clips.some(c=>c.soundId.startsWith('u-')));await page.locator('#levels button').first().click();await page.locator('#add-time').fill('0');await page.locator('#add-clip').click();assert.ok((await page.evaluate(()=>FoleyApp.getProject())).clips.every(c=>!c.soundId.startsWith('u-')));await page.locator('#free-mode').click();await page.setViewportSize({width:390,height:844});await page.screenshot({path:path.join(out,'mobile.png'),fullPage:true});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
-  assert.deepEqual(errors,[]);await browser.close();console.log('PASS: tutorial, 20 levels, playback clock, pause/replay, continuous A/B, free creation, edit, undo, save/load, corrupt import, WAV, standalone offline HTML, responsive layout, zero page errors.');
-})().catch(e=>{console.error(e);process.exit(1);});
+const { chromium } = require("playwright");
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const fs = require("node:fs/promises");
+const { pathToFileURL } = require("node:url");
+(async () => {
+  const out = path.join(__dirname, "../test-results");
+  await fs.mkdir(out, { recursive: true });
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.FOLEY_BROWSER_PATH || undefined,
+    args: ["--autoplay-policy=no-user-gesture-required"],
+  });
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 1200 },
+    acceptDownloads: true,
+  });
+  const page = await context.newPage(),
+    errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+  await page.goto(pathToFileURL(path.join(__dirname, "../index.html")).href);
+  await page.locator("#start-tutorial").click();
+  assert.equal(await page.locator("#levels button").count(), 20);
+  assert.equal(await page.locator(".sound-row").count(), 40);
+  await page.locator("#add-time").fill("1.5");
+  await page.locator("#add-clip").click();
+  await page.locator("#add-time").fill("3.5");
+  await page.locator("#add-clip").click();
+  await page.locator("#check").click();
+  assert.match(await page.locator("#result").textContent(), /全部满足/);
+  await page.locator("#play").click();
+  await page.waitForTimeout(450);
+  const before = await page.evaluate(() => FoleyApp.getPlayback());
+  assert.ok(before.playing && before.position > 0.15);
+  await page.locator('[data-view="b"]').click();
+  const switched = await page.evaluate(() => FoleyApp.getPlayback());
+  assert.ok(switched.position >= before.position);
+  assert.equal(switched.view, "b");
+  await page.locator("#play").click();
+  const paused = await page.evaluate(() => FoleyApp.getPlayback());
+  await page.waitForTimeout(300);
+  const still = await page.evaluate(() => FoleyApp.getPlayback());
+  assert.ok(Math.abs(paused.position - still.position) < 0.005);
+  assert.ok(!still.playing);
+  await page.locator("#restart").click();
+  const restarted = await page.evaluate(() => FoleyApp.getPlayback());
+  assert.ok(restarted.playing && restarted.position < 0.3);
+  await page.locator("#play").click();
+  for (let i = 0; i < 20; i++) {
+    await page.locator("#levels button").nth(i).click();
+    await page.locator("#example").click();
+    await page.locator("#check").click();
+    assert.match(
+      await page.locator("#result").textContent(),
+      /全部满足/,
+      `level ${i + 1}`,
+    );
+  }
+  assert.equal(await page.locator("#progress").textContent(), "20 / 20");
+  await page.locator("#levels button").nth(6).click();
+  await page.locator("#example").click();
+  await page.locator('[data-view="dual"]').click();
+  await page.locator("#free-mode").click();
+  await page.locator("#free-title").fill("星星也会叮当作响");
+  await page.locator("#free-title").press("Tab");
+  await page.locator("#note").fill("盲听像硬币；看到星空后像光点。");
+  await page.locator(".clip-block").first().click();
+  await page.locator("#field-speed").fill("1.2");
+  await page.locator("#field-speed").press("Tab");
+  await page.locator("#check").click();
+  assert.match(await page.locator("#result").textContent(), /结构有效/);
+  const wavPromise = page.waitForEvent("download");
+  await page.locator("#export-wav").click();
+  const wavDownload = await wavPromise;
+  const wavPath = path.join(out, "example.wav");
+  await wavDownload.saveAs(wavPath);
+  const wav = await fs.readFile(wavPath);
+  assert.equal(wav.toString("ascii", 0, 4), "RIFF");
+  const htmlPromise = page.waitForEvent("download");
+  await page.locator("#export-html").click();
+  const htmlDownload = await htmlPromise;
+  const htmlPath = path.join(out, "standalone-example.html");
+  await htmlDownload.saveAs(htmlPath);
+  const jsonPromise = page.waitForEvent("download");
+  await page.locator("#export-project").click();
+  const jsonDownload = await jsonPromise;
+  const jsonPath = path.join(out, "example.foley.json");
+  await jsonDownload.saveAs(jsonPath);
+  await page.screenshot({
+    path: path.join(out, "desktop.png"),
+    fullPage: true,
+  });
+  const oldTitle = await page.locator("#project-title").textContent();
+  await page
+    .locator("#project-file")
+    .setInputFiles({
+      name: "broken.json",
+      mimeType: "application/json",
+      buffer: Buffer.from("{invalid"),
+    });
+  await page.waitForFunction(() =>
+    document.getElementById("toast").textContent.startsWith("导入失败"),
+  );
+  assert.match(await page.locator("#toast").textContent(), /导入失败/);
+  assert.equal(await page.locator("#project-title").textContent(), oldTitle);
+  await page.locator("#reset-project").click();
+  assert.equal(await page.locator(".clip-block").count(), 0);
+  await page.locator("#undo").click();
+  assert.ok((await page.locator(".clip-block").count()) > 0);
+  await page.locator("#project-file").setInputFiles(jsonPath);
+  await page.waitForFunction(
+    () => document.getElementById("toast").textContent === "挑战包已导入。",
+  );
+  assert.match(await page.locator("#toast").textContent(), /已导入/);
+  await page.reload();
+  assert.equal(await page.locator("#project-title").textContent(), oldTitle);
+  assert.equal(
+    await page.locator("#note").inputValue(),
+    "盲听像硬币；看到星空后像光点。",
+  );
+  const standalone = await context.newPage();
+  standalone.on("pageerror", (e) => errors.push(e.message));
+  const requests = [];
+  standalone.on("request", (r) => requests.push(r.url()));
+  await standalone.goto(pathToFileURL(htmlPath).href);
+  await standalone.locator("#replay").click();
+  await standalone.waitForTimeout(350);
+  assert.ok(
+    await standalone
+      .locator("#audio")
+      .evaluate((a) => a.currentTime > 0.1 && !a.paused),
+  );
+  await standalone.locator('[data-v="b"]').click();
+  assert.match(await standalone.locator("#la").textContent(), /星星/);
+  assert.ok(
+    requests.every((u) => u.startsWith("file:") || u.startsWith("data:")),
+  );
+  await standalone.screenshot({
+    path: path.join(out, "standalone.png"),
+    fullPage: true,
+  });
+  await page.locator("#audio-file").setInputFiles(wavPath);
+  await page.waitForFunction(() => FoleyApp.getProject().custom.length === 1);
+  await page.locator("#add-time").fill("0");
+  await page.locator("#add-clip").click();
+  assert.ok(
+    (await page.evaluate(() => FoleyApp.getProject())).clips.some((c) =>
+      c.soundId.startsWith("u-"),
+    ),
+  );
+  await page.locator("#levels button").first().click();
+  await page.locator("#add-time").fill("0");
+  await page.locator("#add-clip").click();
+  assert.ok(
+    (await page.evaluate(() => FoleyApp.getProject())).clips.every(
+      (c) => !c.soundId.startsWith("u-"),
+    ),
+  );
+  await page.locator("#free-mode").click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(out, "mobile.png"), fullPage: true });
+  assert.ok(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
+  );
+  assert.deepEqual(errors, []);
+  await browser.close();
+  console.log(
+    "PASS: tutorial, 20 levels, playback clock, pause/replay, continuous A/B, free creation, edit, undo, save/load, corrupt import, WAV, standalone offline HTML, responsive layout, zero page errors.",
+  );
+})().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

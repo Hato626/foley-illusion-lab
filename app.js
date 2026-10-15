@@ -1,36 +1,508 @@
-(function(){'use strict';
-  const F=window.Foley,$=id=>document.getElementById(id),KEY='foley-lab-v1';
-  let project=F.emptyProject(),selectedSound='s0',selectedClip=null,view='dual',mode='challenge',storage={},completed=[],undoStack=[],audioContext,master,source,previewSource,position=0,startedAt=0,playing=false,toastTimer,lastFrame=0;
-  const samples=new Map();
-  const clone=x=>JSON.parse(JSON.stringify(x));
-  function say(message){$('toast').textContent=message;$('toast').style.display='block';clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').style.display='none',4200);}
-  function remember(){undoStack.push(clone(project));if(undoStack.length>25)undoStack.shift();$('undo').disabled=false;}
-  function save(){storage[mode==='free'?'free':project.levelId]=project;try{localStorage.setItem(KEY,JSON.stringify({active:mode==='free'?'free':project.levelId,storage,completed}));$('save-status').textContent='已保存在本机';}catch{$('save-status').textContent='本机存储已满，请保存挑战包';}}
-  function soundOf(id){return F.byId(id)||project.custom.find(s=>s.id===id);}
-  function getSamples(id){if(samples.has(id))return samples.get(id);const s=soundOf(id);if(!s)return null;let data;if(s.pcm){const bytes=Uint8Array.from(atob(s.pcm),c=>c.charCodeAt(0)),dv=new DataView(bytes.buffer);data=new Float32Array(bytes.length/2);for(let i=0;i<data.length;i++)data[i]=dv.getInt16(i*2,true)/32768;}else data=F.synth(s);samples.set(id,data);return data;}
-  async function context(){if(!audioContext){audioContext=new (window.AudioContext||window.webkitAudioContext)();master=audioContext.createGain();master.gain.value=Number($('volume').value);master.connect(audioContext.destination);}if(audioContext.state!=='running')await audioContext.resume();return audioContext;}
-  function now(){return playing?Math.min(project.duration,audioContext.currentTime-startedAt):position;}
-  function stop(keep=true){if(previewSource){try{previewSource.stop();}catch{}previewSource.disconnect();previewSource=null;}if(playing&&keep)position=now();playing=false;if(source){source.onended=null;try{source.stop();}catch{}source.disconnect();source=null;}$('play').textContent='▶ 播放';}
-  async function play(){try{if(!project.clips.length){say('先添加声音，或放入示例音轨。');return;}await context();stop();if(position>=project.duration-.01)position=0;const mix=F.renderMix(project,getSamples),buffer=audioContext.createBuffer(1,mix.length,F.RATE);buffer.copyToChannel(mix,0);source=audioContext.createBufferSource();source.buffer=buffer;source.connect(master);startedAt=audioContext.currentTime-position;source.start(0,position);playing=true;source.onended=()=>{if(playing){position=project.duration;playing=false;$('play').textContent='▶ 播放';}};$('play').textContent='Ⅱ 暂停';}catch(e){say('播放失败：'+e.message);}}
-  async function preview(id){try{await context();stop();const data=getSamples(id),buffer=audioContext.createBuffer(1,data.length,F.RATE);buffer.copyToChannel(data,0);const s=audioContext.createBufferSource();s.buffer=buffer;s.connect(master);previewSource=s;s.start();s.onended=()=>{s.disconnect();if(previewSource===s)previewSource=null;};}catch(e){say('试听失败：'+e.message);}}
-  function mutate(fn){stop();remember();fn();save();render();}
-  function currentLevel(){return F.levels[project.scene];}
-  function button(label,fn,className=''){const b=document.createElement('button');b.textContent=label;b.className=className;b.onclick=fn;return b;}
-  function renderNav(){$('levels').replaceChildren();F.levels.forEach((level,i)=>{const b=button('',()=>loadLevel(i));b.classList.toggle('active',mode==='challenge'&&project.levelId===level.id);b.classList.toggle('done',completed.includes(level.id));const n=document.createElement('span');n.className='number';n.textContent=completed.includes(level.id)?'✓':String(i+1).padStart(2,'0');b.append(n,document.createTextNode(level.title));b.setAttribute('aria-label',`实验 ${i+1}：${level.title}`);$('levels').append(b);});$('progress').textContent=`${completed.length} / 20`;}
-  function renderSounds(){const cat=$('category').value,list=[...F.sounds,...project.custom];$('sound-list').replaceChildren();for(const s of list.filter(s=>cat==='all'||s.category===cat)){const row=document.createElement('div');row.className='sound-row'+(s.id===selectedSound?' active':'');const b=button('',()=>{selectedSound=s.id;renderSounds();renderClip();});b.textContent=s.name;const label=document.createElement('small');label.textContent=s.origin;b.append(label);const audition=button('♫',()=>preview(s.id),'preview');audition.setAttribute('aria-label',`试听 ${s.name}`);row.append(b,audition);if(s.category==='custom'){const remove=button('×',()=>mutate(()=>{project.custom=project.custom.filter(x=>x.id!==s.id);project.clips=project.clips.filter(x=>x.soundId!==s.id);selectedClip=null;}),'small');remove.title='删除音色及引用片段（可撤销）';remove.setAttribute('aria-label','删除导入音色 '+s.name);row.append(remove);}$('sound-list').append(row);}}
-  function renderTimeline(){const tl=$('timeline');tl.replaceChildren();for(let i=0;i<=Math.ceil(project.duration);i++){if(i>project.duration)continue;const tick=document.createElement('span');tick.className='tick';tick.style.left=`${i/project.duration*100}%`;tick.textContent=`${i}s`;tl.append(tick);}for(let lane=0;lane<3;lane++){const l=document.createElement('span');l.className='lane-label';l.style.top=`${40+lane*35}px`;l.textContent=String(lane+1);tl.append(l);}for(const c of F.expanded(project.clips,project.duration)){const b=button(soundOf(c.soundId).name,()=>{selectedClip=c.id;renderTimeline();renderClip();},'clip-block');b.classList.toggle('selected',selectedClip===c.id);b.classList.toggle('ghost',c.onset!==c.start);b.style.left=`${c.onset/project.duration*100}%`;b.style.width=`${Math.min(c.length,project.duration-c.onset)/project.duration*100}%`;b.style.top=`${29+c.lane*35}px`;b.title=`${soundOf(c.soundId).name} · ${c.onset.toFixed(2)} 秒`;b.setAttribute('aria-label',b.title);tl.append(b);}$('clip-count').textContent=`${project.clips.length} / 64`;$('add-time').max=project.duration;}
-  function renderClip(){const area=$('clip-editor'),c=project.clips.find(c=>c.id===selectedClip);area.replaceChildren();if(!c){const p=document.createElement('p');p.className='muted';p.textContent='选择音色并添加。点击时间线的片段，可调整切片、速度和重复。';area.append(p);return;}const h=document.createElement('h4');h.textContent=soundOf(c.soundId).name;const swap=button('换为 '+soundOf(selectedSound).name,()=>mutate(()=>{c.soundId=selectedSound;c.trimStart=0;c.trimEnd=Math.min(.5,soundOf(selectedSound).duration);}),'small');swap.disabled=c.soundId===selectedSound;h.append(swap);h.append(button('删除片段',()=>mutate(()=>{project.clips=project.clips.filter(x=>x.id!==c.id);selectedClip=null;}),'small'));area.append(h);const fields=document.createElement('div');fields.className='fields';const defs=[['start','开始 / 秒',0,project.duration,.05],['trimStart','音源起点 / 秒',0,soundOf(c.soundId).duration-.01,.01],['trimEnd','音源终点 / 秒',.01,soundOf(c.soundId).duration,.01],['speed','播放速度',.5,2,.05],['repeats','重复次数',1,8,1],['gap','重复间距 / 秒',.15,4,.05],['gain','片段音量',0,1,.05],['lane','音轨（0–2）',0,2,1]];defs.forEach(([key,label,min,max,step])=>{const wrap=document.createElement('label');wrap.textContent=label;const input=document.createElement('input');input.type='number';input.id=`field-${key}`;input.min=min;input.max=max;input.step=step;input.value=c[key];input.onchange=()=>{const candidate=clone(project);candidate.clips.find(x=>x.id===c.id)[key]=Number(input.value);try{const good=F.validateProject(candidate);mutate(()=>project=good);}catch(e){say(e.message);input.value=c[key];}};wrap.append(input);fields.append(wrap);});area.append(fields);}
-  function renderRequirements(showResult=false){const area=$('requirements');area.replaceChildren();$('challenge-heading').textContent=mode==='free'?'自由模式 · 作品检查':'公开的实验条件';if(mode==='free'){const p=document.createElement('p');p.textContent='自由模式无时间命中要求。双画面的动作提示仍来自选中的实验。';area.append(p);$('hint').hidden=true;$('example').hidden=true;return;}$('hint').hidden=false;$('example').hidden=false;const result=F.evaluate(project,currentLevel());result.checks.forEach(check=>{const div=document.createElement('div');div.className='check-item'+(showResult&&check.ok?' ok':'');div.textContent=check.label;area.append(div);});}
-  function render(){for(const id of samples.keys())if(id.startsWith('u-'))samples.delete(id);if(!soundOf(selectedSound))selectedSound=F.sounds.find(s=>s.category===currentLevel().events[0].categories[0]).id;if($('category').value==='custom'&&!project.custom.length)$('category').value='all';const level=currentLevel();$('mode-label').textContent=mode==='free'?'自由创作 / OPEN STUDIO':`实验 ${String(level.index+1).padStart(2,'0')} / 20`;$('project-title').textContent=project.title;$('insight').textContent=level.insight;$('label-a').textContent=view==='blind'?'先不看来源':view==='b'?level.right:level.left;$('label-b').textContent=level.right;$('seek').max=project.duration;$('note').value=project.note;$('scene-choice-label').hidden=mode!=='free';$('scene-choice').value=project.scene;$('free-settings').hidden=mode!=='free';$('free-title').value=project.title;$('free-duration').value=project.duration;$('result').textContent='';$('hint-text').textContent='';$('undo').disabled=!undoStack.length;renderNav();renderSounds();renderTimeline();renderClip();renderRequirements();draw();}
-  function draw(){const t=now(),level=currentLevel();$('clock').textContent=`${t.toFixed(2)} / ${project.duration.toFixed(2)} 秒`;$('seek').value=t;$('playhead').style.left=`${t/project.duration*100}%`;FoleyScenes.drawScene($('canvas-a'),project.scene,view==='b'?1:0,t,level.events,view==='blind');if(view==='dual')FoleyScenes.drawScene($('canvas-b'),project.scene,1,t,level.events);}
-  function frame(timestamp){if(timestamp-lastFrame>=32){draw();lastFrame=timestamp;}requestAnimationFrame(frame);}
-  function setView(next){view=next;document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===view));$('stages').classList.toggle('single',view!=='dual');$('stage-b').hidden=view!=='dual';$('label-a').textContent=view==='blind'?'先不看来源':view==='b'?currentLevel().right:currentLevel().left;draw();}
-  function loadLevel(i){stop(false);save();mode='challenge';project=storage[F.levels[i].id]?clone(storage[F.levels[i].id]):F.emptyProject(i);selectedClip=null;position=0;undoStack=[];save();render();setView(view);}
-  function encodeBytes(bytes){let result='';for(let i=0;i<bytes.length;i+=8192)result+=String.fromCharCode(...bytes.subarray(i,i+8192));return btoa(result);}
-  function download(content,name,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}
-  function filename(){return project.title.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').slice(0,60)||'声音实验';}
-  function escapeHtml(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
-  function exportHTML(){const mix=F.renderMix(project,getSamples),audio=encodeBytes(new Uint8Array(F.wav(mix))),level=currentLevel(),title=escapeHtml(project.title),safeJSON=x=>JSON.stringify(x).replace(/</g,'\\u003c');const html=`<!--
+(function () {
+  "use strict";
+  const F = window.Foley,
+    $ = (id) => document.getElementById(id),
+    KEY = "foley-lab-v1";
+  let project = F.emptyProject(),
+    selectedSound = "s0",
+    selectedClip = null,
+    view = "dual",
+    mode = "challenge",
+    storage = {},
+    completed = [],
+    undoStack = [],
+    audioContext,
+    master,
+    source,
+    previewSource,
+    position = 0,
+    startedAt = 0,
+    playing = false,
+    toastTimer,
+    lastFrame = 0;
+  const samples = new Map();
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+  function say(message) {
+    $("toast").textContent = message;
+    $("toast").style.display = "block";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => ($("toast").style.display = "none"), 4200);
+  }
+  function remember() {
+    undoStack.push(clone(project));
+    if (undoStack.length > 25) undoStack.shift();
+    $("undo").disabled = false;
+  }
+  function save() {
+    storage[mode === "free" ? "free" : project.levelId] = project;
+    try {
+      localStorage.setItem(
+        KEY,
+        JSON.stringify({
+          active: mode === "free" ? "free" : project.levelId,
+          storage,
+          completed,
+        }),
+      );
+      $("save-status").textContent = "已保存在本机";
+    } catch {
+      $("save-status").textContent = "本机存储已满，请保存挑战包";
+    }
+  }
+  function soundOf(id) {
+    return F.byId(id) || project.custom.find((s) => s.id === id);
+  }
+  function getSamples(id) {
+    if (samples.has(id)) return samples.get(id);
+    const s = soundOf(id);
+    if (!s) return null;
+    let data;
+    if (s.pcm) {
+      const bytes = Uint8Array.from(atob(s.pcm), (c) => c.charCodeAt(0)),
+        dv = new DataView(bytes.buffer);
+      data = new Float32Array(bytes.length / 2);
+      for (let i = 0; i < data.length; i++)
+        data[i] = dv.getInt16(i * 2, true) / 32768;
+    } else data = F.synth(s);
+    samples.set(id, data);
+    return data;
+  }
+  async function context() {
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      master = audioContext.createGain();
+      master.gain.value = Number($("volume").value);
+      master.connect(audioContext.destination);
+    }
+    if (audioContext.state !== "running") await audioContext.resume();
+    return audioContext;
+  }
+  function now() {
+    return playing
+      ? Math.min(project.duration, audioContext.currentTime - startedAt)
+      : position;
+  }
+  function stop(keep = true) {
+    if (previewSource) {
+      try {
+        previewSource.stop();
+      } catch {}
+      previewSource.disconnect();
+      previewSource = null;
+    }
+    if (playing && keep) position = now();
+    playing = false;
+    if (source) {
+      source.onended = null;
+      try {
+        source.stop();
+      } catch {}
+      source.disconnect();
+      source = null;
+    }
+    $("play").textContent = "▶ 播放";
+  }
+  async function play() {
+    try {
+      if (!project.clips.length) {
+        say("先添加声音，或放入示例音轨。");
+        return;
+      }
+      await context();
+      stop();
+      if (position >= project.duration - 0.01) position = 0;
+      const mix = F.renderMix(project, getSamples),
+        buffer = audioContext.createBuffer(1, mix.length, F.RATE);
+      buffer.copyToChannel(mix, 0);
+      source = audioContext.createBufferSource();
+      source.buffer = buffer;
+      source.connect(master);
+      startedAt = audioContext.currentTime - position;
+      source.start(0, position);
+      playing = true;
+      source.onended = () => {
+        if (playing) {
+          position = project.duration;
+          playing = false;
+          $("play").textContent = "▶ 播放";
+        }
+      };
+      $("play").textContent = "Ⅱ 暂停";
+    } catch (e) {
+      say("播放失败：" + e.message);
+    }
+  }
+  async function preview(id) {
+    try {
+      await context();
+      stop();
+      const data = getSamples(id),
+        buffer = audioContext.createBuffer(1, data.length, F.RATE);
+      buffer.copyToChannel(data, 0);
+      const s = audioContext.createBufferSource();
+      s.buffer = buffer;
+      s.connect(master);
+      previewSource = s;
+      s.start();
+      s.onended = () => {
+        s.disconnect();
+        if (previewSource === s) previewSource = null;
+      };
+    } catch (e) {
+      say("试听失败：" + e.message);
+    }
+  }
+  function mutate(fn) {
+    stop();
+    remember();
+    fn();
+    save();
+    render();
+  }
+  function currentLevel() {
+    return F.levels[project.scene];
+  }
+  function button(label, fn, className = "") {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.className = className;
+    b.onclick = fn;
+    return b;
+  }
+  function renderNav() {
+    $("levels").replaceChildren();
+    F.levels.forEach((level, i) => {
+      const b = button("", () => loadLevel(i));
+      b.classList.toggle(
+        "active",
+        mode === "challenge" && project.levelId === level.id,
+      );
+      b.classList.toggle("done", completed.includes(level.id));
+      const n = document.createElement("span");
+      n.className = "number";
+      n.textContent = completed.includes(level.id)
+        ? "✓"
+        : String(i + 1).padStart(2, "0");
+      b.append(n, document.createTextNode(level.title));
+      b.setAttribute("aria-label", `实验 ${i + 1}：${level.title}`);
+      $("levels").append(b);
+    });
+    $("progress").textContent = `${completed.length} / 20`;
+  }
+  function renderSounds() {
+    const cat = $("category").value,
+      list = [...F.sounds, ...project.custom];
+    $("sound-list").replaceChildren();
+    for (const s of list.filter((s) => cat === "all" || s.category === cat)) {
+      const row = document.createElement("div");
+      row.className = "sound-row" + (s.id === selectedSound ? " active" : "");
+      const b = button("", () => {
+        selectedSound = s.id;
+        renderSounds();
+        renderClip();
+      });
+      b.textContent = s.name;
+      const label = document.createElement("small");
+      label.textContent = s.origin;
+      b.append(label);
+      const audition = button("♫", () => preview(s.id), "preview");
+      audition.setAttribute("aria-label", `试听 ${s.name}`);
+      row.append(b, audition);
+      if (s.category === "custom") {
+        const remove = button(
+          "×",
+          () =>
+            mutate(() => {
+              project.custom = project.custom.filter((x) => x.id !== s.id);
+              project.clips = project.clips.filter((x) => x.soundId !== s.id);
+              selectedClip = null;
+            }),
+          "small",
+        );
+        remove.title = "删除音色及引用片段（可撤销）";
+        remove.setAttribute("aria-label", "删除导入音色 " + s.name);
+        row.append(remove);
+      }
+      $("sound-list").append(row);
+    }
+  }
+  function renderTimeline() {
+    const tl = $("timeline");
+    tl.replaceChildren();
+    for (let i = 0; i <= Math.ceil(project.duration); i++) {
+      if (i > project.duration) continue;
+      const tick = document.createElement("span");
+      tick.className = "tick";
+      tick.style.left = `${(i / project.duration) * 100}%`;
+      tick.textContent = `${i}s`;
+      tl.append(tick);
+    }
+    for (let lane = 0; lane < 3; lane++) {
+      const l = document.createElement("span");
+      l.className = "lane-label";
+      l.style.top = `${40 + lane * 35}px`;
+      l.textContent = String(lane + 1);
+      tl.append(l);
+    }
+    for (const c of F.expanded(project.clips, project.duration)) {
+      const b = button(
+        soundOf(c.soundId).name,
+        () => {
+          selectedClip = c.id;
+          renderTimeline();
+          renderClip();
+        },
+        "clip-block",
+      );
+      b.classList.toggle("selected", selectedClip === c.id);
+      b.classList.toggle("ghost", c.onset !== c.start);
+      b.style.left = `${(c.onset / project.duration) * 100}%`;
+      b.style.width = `${(Math.min(c.length, project.duration - c.onset) / project.duration) * 100}%`;
+      b.style.top = `${29 + c.lane * 35}px`;
+      b.title = `${soundOf(c.soundId).name} · ${c.onset.toFixed(2)} 秒`;
+      b.setAttribute("aria-label", b.title);
+      tl.append(b);
+    }
+    $("clip-count").textContent = `${project.clips.length} / 64`;
+    $("add-time").max = project.duration;
+  }
+  function renderClip() {
+    const area = $("clip-editor"),
+      c = project.clips.find((c) => c.id === selectedClip);
+    area.replaceChildren();
+    if (!c) {
+      const p = document.createElement("p");
+      p.className = "muted";
+      p.textContent =
+        "选择音色并添加。点击时间线的片段，可调整切片、速度和重复。";
+      area.append(p);
+      return;
+    }
+    const h = document.createElement("h4");
+    h.textContent = soundOf(c.soundId).name;
+    const swap = button(
+      "换为 " + soundOf(selectedSound).name,
+      () =>
+        mutate(() => {
+          c.soundId = selectedSound;
+          c.trimStart = 0;
+          c.trimEnd = Math.min(0.5, soundOf(selectedSound).duration);
+        }),
+      "small",
+    );
+    swap.disabled = c.soundId === selectedSound;
+    h.append(swap);
+    h.append(
+      button(
+        "删除片段",
+        () =>
+          mutate(() => {
+            project.clips = project.clips.filter((x) => x.id !== c.id);
+            selectedClip = null;
+          }),
+        "small",
+      ),
+    );
+    area.append(h);
+    const fields = document.createElement("div");
+    fields.className = "fields";
+    const defs = [
+      ["start", "开始 / 秒", 0, project.duration, 0.05],
+      [
+        "trimStart",
+        "音源起点 / 秒",
+        0,
+        soundOf(c.soundId).duration - 0.01,
+        0.01,
+      ],
+      ["trimEnd", "音源终点 / 秒", 0.01, soundOf(c.soundId).duration, 0.01],
+      ["speed", "播放速度", 0.5, 2, 0.05],
+      ["repeats", "重复次数", 1, 8, 1],
+      ["gap", "重复间距 / 秒", 0.15, 4, 0.05],
+      ["gain", "片段音量", 0, 1, 0.05],
+      ["lane", "音轨（0–2）", 0, 2, 1],
+    ];
+    defs.forEach(([key, label, min, max, step]) => {
+      const wrap = document.createElement("label");
+      wrap.textContent = label;
+      const input = document.createElement("input");
+      input.type = "number";
+      input.id = `field-${key}`;
+      input.min = min;
+      input.max = max;
+      input.step = step;
+      input.value = c[key];
+      input.onchange = () => {
+        const candidate = clone(project);
+        candidate.clips.find((x) => x.id === c.id)[key] = Number(input.value);
+        try {
+          const good = F.validateProject(candidate);
+          mutate(() => (project = good));
+        } catch (e) {
+          say(e.message);
+          input.value = c[key];
+        }
+      };
+      wrap.append(input);
+      fields.append(wrap);
+    });
+    area.append(fields);
+  }
+  function renderRequirements(showResult = false) {
+    const area = $("requirements");
+    area.replaceChildren();
+    $("challenge-heading").textContent =
+      mode === "free" ? "自由模式 · 作品检查" : "公开的实验条件";
+    if (mode === "free") {
+      const p = document.createElement("p");
+      p.textContent =
+        "自由模式无时间命中要求。双画面的动作提示仍来自选中的实验。";
+      area.append(p);
+      $("hint").hidden = true;
+      $("example").hidden = true;
+      return;
+    }
+    $("hint").hidden = false;
+    $("example").hidden = false;
+    const result = F.evaluate(project, currentLevel());
+    result.checks.forEach((check) => {
+      const div = document.createElement("div");
+      div.className = "check-item" + (showResult && check.ok ? " ok" : "");
+      div.textContent = check.label;
+      area.append(div);
+    });
+  }
+  function render() {
+    for (const id of samples.keys())
+      if (id.startsWith("u-")) samples.delete(id);
+    if (!soundOf(selectedSound))
+      selectedSound = F.sounds.find(
+        (s) => s.category === currentLevel().events[0].categories[0],
+      ).id;
+    if ($("category").value === "custom" && !project.custom.length)
+      $("category").value = "all";
+    const level = currentLevel();
+    $("mode-label").textContent =
+      mode === "free"
+        ? "自由创作 / OPEN STUDIO"
+        : `实验 ${String(level.index + 1).padStart(2, "0")} / 20`;
+    $("project-title").textContent = project.title;
+    $("insight").textContent = level.insight;
+    $("label-a").textContent =
+      view === "blind" ? "先不看来源" : view === "b" ? level.right : level.left;
+    $("label-b").textContent = level.right;
+    $("seek").max = project.duration;
+    $("note").value = project.note;
+    $("scene-choice-label").hidden = mode !== "free";
+    $("scene-choice").value = project.scene;
+    $("free-settings").hidden = mode !== "free";
+    $("free-title").value = project.title;
+    $("free-duration").value = project.duration;
+    $("result").textContent = "";
+    $("hint-text").textContent = "";
+    $("undo").disabled = !undoStack.length;
+    renderNav();
+    renderSounds();
+    renderTimeline();
+    renderClip();
+    renderRequirements();
+    draw();
+  }
+  function draw() {
+    const t = now(),
+      level = currentLevel();
+    $("clock").textContent =
+      `${t.toFixed(2)} / ${project.duration.toFixed(2)} 秒`;
+    $("seek").value = t;
+    $("playhead").style.left = `${(t / project.duration) * 100}%`;
+    FoleyScenes.drawScene(
+      $("canvas-a"),
+      project.scene,
+      view === "b" ? 1 : 0,
+      t,
+      level.events,
+      view === "blind",
+    );
+    if (view === "dual")
+      FoleyScenes.drawScene($("canvas-b"), project.scene, 1, t, level.events);
+  }
+  function frame(timestamp) {
+    if (timestamp - lastFrame >= 32) {
+      draw();
+      lastFrame = timestamp;
+    }
+    requestAnimationFrame(frame);
+  }
+  function setView(next) {
+    view = next;
+    document
+      .querySelectorAll("[data-view]")
+      .forEach((b) => b.classList.toggle("active", b.dataset.view === view));
+    $("stages").classList.toggle("single", view !== "dual");
+    $("stage-b").hidden = view !== "dual";
+    $("label-a").textContent =
+      view === "blind"
+        ? "先不看来源"
+        : view === "b"
+          ? currentLevel().right
+          : currentLevel().left;
+    draw();
+  }
+  function loadLevel(i) {
+    stop(false);
+    save();
+    mode = "challenge";
+    project = storage[F.levels[i].id]
+      ? clone(storage[F.levels[i].id])
+      : F.emptyProject(i);
+    selectedClip = null;
+    position = 0;
+    undoStack = [];
+    save();
+    render();
+    setView(view);
+  }
+  function encodeBytes(bytes) {
+    let result = "";
+    for (let i = 0; i < bytes.length; i += 8192)
+      result += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(result);
+  }
+  function download(content, name, type) {
+    const blob = new Blob([content], { type }),
+      url = URL.createObjectURL(blob),
+      a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+  }
+  function filename() {
+    return (
+      project.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").slice(0, 60) ||
+      "声音实验"
+    );
+  }
+  function escapeHtml(s) {
+    return s.replace(
+      /[&<>"']/g,
+      (c) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[c],
+    );
+  }
+  function exportHTML() {
+    const mix = F.renderMix(project, getSamples),
+      audio = encodeBytes(new Uint8Array(F.wav(mix))),
+      level = currentLevel(),
+      title = escapeHtml(project.title),
+      safeJSON = (x) => JSON.stringify(x).replace(/</g, "\\u003c");
+    const html = `<!--
 MIT License
 
 Copyright (c) 2026 Hato626
@@ -54,31 +526,345 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 -->
-<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font:16px/1.6 system-ui;background:#f7f6ef;color:#203936;max-width:1100px;margin:30px auto;padding:20px}h1{margin:0}p{color:#5c7364}section{display:flex;gap:15px}figure{margin:0;flex:1;min-width:0}canvas{width:100%;border-radius:10px}figcaption{padding:8px}audio{width:100%;margin:22px 0}button{padding:10px 18px;border:1px solid #b9cab7;border-radius:6px;margin:5px;background:#e7eddf;cursor:pointer}small{display:block;margin-top:25px}.single figure{max-width:800px}.single #b{display:none}pre{white-space:pre-wrap;font:inherit}</style><h1>${title}</h1><p>同一声音，换个解释。切换画面时，音轨继续播放。</p><nav><button data-v="blind">盲听</button><button data-v="a">只看 A</button><button data-v="b">只看 B</button><button data-v="dual">双画面</button><button id="replay">从头播放</button></nav><section id="stages"><figure><canvas id="ca"></canvas><figcaption id="la"></figcaption></figure><figure id="b"><canvas id="cb"></canvas><figcaption id="lb"></figcaption></figure></section><audio id="audio" controls src="data:audio/wav;base64,${audio}"></audio><p>${escapeHtml(level.insight)}</p><pre>${escapeHtml(project.note)}</pre><small>由声音错觉实验室导出 · 原创合成音色与动画：CC0-1.0 · 播放器代码：MIT · 用户导入素材的权利由创作者确认。文件不连接任何服务器。</small><script>const drawScene=${FoleyScenes.drawScene.toString()};const level=${safeJSON(level)};const audio=document.getElementById('audio');let view='dual';function draw(){const t=audio.currentTime;drawScene(document.getElementById('ca'),level.index,view==='b'?1:0,t,level.events,view==='blind');if(view==='dual')drawScene(document.getElementById('cb'),level.index,1,t,level.events);requestAnimationFrame(draw)}document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{view=b.dataset.v;document.getElementById('stages').className=view==='dual'?'':'single';labels()});function labels(){document.getElementById('la').textContent=view==='blind'?'先不看来源':view==='b'?level.right:level.left;document.getElementById('lb').textContent=level.right}document.getElementById('replay').onclick=()=>{audio.currentTime=0;audio.play()};labels();draw();<\/script></html>`;download(html,filename()+'.html','text/html');say('已导出独立 HTML，双击可播放；声音已内嵌。');}
+<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font:16px/1.6 system-ui;background:#f7f6ef;color:#203936;max-width:1100px;margin:30px auto;padding:20px}h1{margin:0}p{color:#5c7364}section{display:flex;gap:15px}figure{margin:0;flex:1;min-width:0}canvas{width:100%;border-radius:10px}figcaption{padding:8px}audio{width:100%;margin:22px 0}button{padding:10px 18px;border:1px solid #b9cab7;border-radius:6px;margin:5px;background:#e7eddf;cursor:pointer}small{display:block;margin-top:25px}.single figure{max-width:800px}.single #b{display:none}pre{white-space:pre-wrap;font:inherit}</style><h1>${title}</h1><p>同一声音，换个解释。切换画面时，音轨继续播放。</p><nav><button data-v="blind">盲听</button><button data-v="a">只看 A</button><button data-v="b">只看 B</button><button data-v="dual">双画面</button><button id="replay">从头播放</button></nav><section id="stages"><figure><canvas id="ca"></canvas><figcaption id="la"></figcaption></figure><figure id="b"><canvas id="cb"></canvas><figcaption id="lb"></figcaption></figure></section><audio id="audio" controls src="data:audio/wav;base64,${audio}"></audio><p>${escapeHtml(level.insight)}</p><pre>${escapeHtml(project.note)}</pre><small>由声音错觉实验室导出 · 原创合成音色与动画：CC0-1.0 · 播放器代码：MIT · 用户导入素材的权利由创作者确认。文件不连接任何服务器。</small><script>const drawScene=${FoleyScenes.drawScene.toString()};const level=${safeJSON(level)};const audio=document.getElementById('audio');let view='dual';function draw(){const t=audio.currentTime;drawScene(document.getElementById('ca'),level.index,view==='b'?1:0,t,level.events,view==='blind');if(view==='dual')drawScene(document.getElementById('cb'),level.index,1,t,level.events);requestAnimationFrame(draw)}document.querySelectorAll('[data-v]').forEach(b=>b.onclick=()=>{view=b.dataset.v;document.getElementById('stages').className=view==='dual'?'':'single';labels()});function labels(){document.getElementById('la').textContent=view==='blind'?'先不看来源':view==='b'?level.right:level.left;document.getElementById('lb').textContent=level.right}document.getElementById('replay').onclick=()=>{audio.currentTime=0;audio.play()};labels();draw();<\/script></html>`;
+    download(html, filename() + ".html", "text/html");
+    say("已导出独立 HTML，双击可播放；声音已内嵌。");
+  }
   // Add compact controls without duplicating the editor markup.
-  const undo=button('撤销',()=>{if(!undoStack.length)return;stop();project=undoStack.pop();selectedClip=null;save();render();},'small');undo.id='undo';$('reset-project').before(undo);
-  const freeSettings=document.createElement('div');freeSettings.id='free-settings';freeSettings.className='add-row';freeSettings.hidden=true;
-  const freeTitle=document.createElement('input');freeTitle.id='free-title';freeTitle.type='text';freeTitle.maxLength=80;freeTitle.setAttribute('aria-label','作品名称');const freeDuration=document.createElement('input');freeDuration.id='free-duration';freeDuration.type='number';freeDuration.min=2;freeDuration.max=20;freeDuration.step=.5;freeDuration.setAttribute('aria-label','作品时长');freeSettings.append('作品名 ',freeTitle,' 时长 / 秒 ',freeDuration);$('timeline').parentElement.before(freeSettings);
-  freeTitle.onchange=()=>mutate(()=>project.title=freeTitle.value.trim()||'我的声音实验');freeDuration.onchange=()=>{const n=Number(freeDuration.value);if(n<2||n>20||!Number.isFinite(n)){say('作品时长为 2–20 秒');freeDuration.value=project.duration;return;}if(project.clips.some(c=>c.start>=n)){say('请先把起点超出新时长的片段移回音轨或删除。');freeDuration.value=project.duration;return;}mutate(()=>{project.duration=n;position=Math.min(position,n);});};
-  F.groups.forEach(([id,label])=>{const option=document.createElement('option');option.value=id;option.textContent=label;$('category').append(option);});const customOption=document.createElement('option');customOption.value='custom';customOption.textContent='我的导入声音';$('category').append(customOption);
-  F.levels.forEach(level=>{const o=document.createElement('option');o.value=level.index;o.textContent=`${level.left} / ${level.right}`;$('scene-choice').append(o);});
-  $('category').onchange=renderSounds;$('scene-choice').onchange=()=>mutate(()=>project.scene=Number($('scene-choice').value));
-  $('play').onclick=()=>playing?stop():play();$('restart').onclick=()=>{stop(false);position=0;play();};$('seek').oninput=()=>{const resume=playing;stop(false);position=Number($('seek').value);if(resume)play();else draw();};$('volume').oninput=()=>{if(master)master.gain.setTargetAtTime(Number($('volume').value),audioContext.currentTime,.02);};
-  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>setView(b.dataset.view));
-  $('add-clip').onclick=()=>{const t=Number($('add-time').value);if(!Number.isFinite(t)||t<0||t>=project.duration){say('添加位置需要在作品时长以内。');return;}if(project.clips.length>=F.MAX_CLIPS){say('最多 64 个片段，请删除一些再添加。');return;}mutate(()=>{const c=F.defaultClip(selectedSound,t,project.clips.length%3);c.trimEnd=Math.min(c.trimEnd,soundOf(selectedSound).duration);project.clips.push(c);selectedClip=c.id;});};
-  $('timeline').onclick=e=>{if(e.target===e.currentTarget){const r=e.currentTarget.getBoundingClientRect();$('add-time').value=(Math.max(0,Math.min(project.duration-.05,(e.clientX-r.left)/r.width*project.duration))).toFixed(2);}};
-  $('reset-project').onclick=()=>mutate(()=>{project.clips=[];selectedClip=null;position=0;});
-  $('check').onclick=()=>{try{F.validateProject(project);if(mode==='free'){$('result').textContent=project.clips.length?'作品结构有效，可以导出。试听后再决定是否满意。':'作品还没有声音，先添加一个片段。';return;}const r=F.evaluate(project,currentLevel());renderRequirements(true);$('result').textContent=r.passed?'✓ 条件全部满足。接着试试盲听与 A / B 切换，再记录你的联想。':`已满足 ${r.score}% 条件。检查未打勾的时间点与音色类别。`;if(r.passed&&!completed.includes(project.levelId)){completed.push(project.levelId);save();renderNav();}}catch(e){say(e.message);}};
-  $('hint').onclick=()=>{const l=currentLevel();$('hint-text').textContent=`先选“${F.groups.find(g=>g[0]===l.events[0].categories[0])[1]}”类音色，在 ${l.events.map(e=>e.time).join('、')} 秒添加。每个命中片段音量 ≥ 0.10、时长 ≥ 0.06 秒。${l.rule?.type==='repeat'?'用一个片段重复 4 次，间距 1 秒。':l.rule?.type==='speed'?'把一个命中片段的播放速度改为 1.5。':l.rule?.type==='trim'?'把一个命中片段的音源起点改为 0.12 秒。':'听觉联想没有标准答案；换音色比较也能满足条件。'}`;};
-  $('example').onclick=()=>mutate(()=>{const keepNote=project.note;project=F.example(currentLevel());project.note=keepNote;selectedClip=project.clips[0]?.id;position=0;say('已放入示例；可撤销，也可以换音色做自己的版本。');});
-  $('note').oninput=()=>{project.note=$('note').value;save();};
-  $('free-mode').onclick=()=>{stop(false);save();const start=clone(project);mode='free';project=storage.free?clone(storage.free):{...start,levelId:null,title:'我的声音实验'};project.levelId=null;position=0;undoStack=[];selectedClip=null;save();render();};
-  $('export-project').onclick=()=>download(JSON.stringify(F.validateProject(project),null,2),filename()+'.foley.json','application/json');$('export-wav').onclick=()=>{if(!project.clips.length){say('先添加声音再导出。');return;}download(F.wav(F.renderMix(project,getSamples)),filename()+'.wav','audio/wav');say('已导出 24 kHz / 16-bit 单声道 WAV。');};$('export-html').onclick=()=>{if(!project.clips.length){say('先添加声音再导出。');return;}exportHTML();};
-  $('open-project').onclick=()=>$('project-file').click();$('project-file').onchange=async()=>{const file=$('project-file').files[0];if(!file)return;try{if(file.size>4*1024*1024)throw Error('挑战包超过 4 MB 上限');const valid=F.validateProject(JSON.parse(await file.text()));stop(false);save();mode=valid.levelId?'challenge':'free';project=valid;selectedClip=null;selectedSound='s0';position=0;undoStack=[];samples.clear();save();render();say('挑战包已导入。');}catch(e){say('导入失败：'+e.message);}finally{$('project-file').value='';}};
-  $('import-audio').onclick=()=>$('audio-file').click();$('audio-file').onchange=async()=>{const file=$('audio-file').files[0];if(!file)return;try{if(project.custom.length>=4)throw Error('每个作品最多导入 4 个音色');if(file.size>12*1024*1024)throw Error('音频文件超过 12 MB 上限');const ctx=await context(),decoded=await ctx.decodeAudioData(await file.arrayBuffer());if(decoded.duration>10)throw Error('请先裁成 10 秒以内的短音效');if(decoded.duration<.02)throw Error('音频太短');const offline=new OfflineAudioContext(1,Math.ceil(decoded.duration*F.RATE),F.RATE),s=offline.createBufferSource();s.buffer=decoded;s.connect(offline.destination);s.start();const output=await offline.startRendering(),pcm=new Uint8Array(output.length*2),dv=new DataView(pcm.buffer),data=output.getChannelData(0);for(let i=0;i<data.length;i++)dv.setInt16(i*2,Math.round(Math.max(-1,Math.min(1,data[i]))*32767),true);const custom={id:'u-'+Date.now(),name:file.name.slice(0,40),duration:data.length/F.RATE,category:'custom',origin:'用户导入',pcm:encodeBytes(pcm)};mutate(()=>{project.custom.push(custom);selectedSound=custom.id;});$('category').value='custom';renderSounds();say('音频已导入，保存在作品内。自带音色用于自由创作，不计入指定类别条件。');}catch(e){say('音频导入失败：'+e.message);}finally{$('audio-file').value='';}};
-  $('help').onclick=()=>$('help-dialog').showModal();$('close-help').onclick=()=>$('help-dialog').close();$('start-tutorial').onclick=()=>{$('help-dialog').close();loadLevel(0);$('hint').click();};
-  document.addEventListener('keydown',e=>{if(e.code==='Space'&&!/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName)&&!$('help-dialog').open){e.preventDefault();playing?stop():play();}});
-  let first=true;try{const data=JSON.parse(localStorage.getItem(KEY)||'null');if(data&&data.storage){for(const [key,value] of Object.entries(data.storage)){try{storage[key]=F.validateProject(value);}catch{}}completed=Array.isArray(data.completed)?[...new Set(data.completed.filter(id=>F.levels.some(l=>l.id===id)))]:[];if(storage[data.active]){project=clone(storage[data.active]);mode=data.active==='free'?'free':'challenge';}first=false;}}catch{}
-  render();requestAnimationFrame(frame);if(first)$('help-dialog').showModal();
-  window.FoleyApp={getProject:()=>clone(project),getPlayback:()=>({playing,position:now(),view}),exportHTML};
+  const undo = button(
+    "撤销",
+    () => {
+      if (!undoStack.length) return;
+      stop();
+      project = undoStack.pop();
+      selectedClip = null;
+      save();
+      render();
+    },
+    "small",
+  );
+  undo.id = "undo";
+  $("reset-project").before(undo);
+  const freeSettings = document.createElement("div");
+  freeSettings.id = "free-settings";
+  freeSettings.className = "add-row";
+  freeSettings.hidden = true;
+  const freeTitle = document.createElement("input");
+  freeTitle.id = "free-title";
+  freeTitle.type = "text";
+  freeTitle.maxLength = 80;
+  freeTitle.setAttribute("aria-label", "作品名称");
+  const freeDuration = document.createElement("input");
+  freeDuration.id = "free-duration";
+  freeDuration.type = "number";
+  freeDuration.min = 2;
+  freeDuration.max = 20;
+  freeDuration.step = 0.5;
+  freeDuration.setAttribute("aria-label", "作品时长");
+  freeSettings.append("作品名 ", freeTitle, " 时长 / 秒 ", freeDuration);
+  $("timeline").parentElement.before(freeSettings);
+  freeTitle.onchange = () =>
+    mutate(() => (project.title = freeTitle.value.trim() || "我的声音实验"));
+  freeDuration.onchange = () => {
+    const n = Number(freeDuration.value);
+    if (n < 2 || n > 20 || !Number.isFinite(n)) {
+      say("作品时长为 2–20 秒");
+      freeDuration.value = project.duration;
+      return;
+    }
+    if (project.clips.some((c) => c.start >= n)) {
+      say("请先把起点超出新时长的片段移回音轨或删除。");
+      freeDuration.value = project.duration;
+      return;
+    }
+    mutate(() => {
+      project.duration = n;
+      position = Math.min(position, n);
+    });
+  };
+  F.groups.forEach(([id, label]) => {
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label;
+    $("category").append(option);
+  });
+  const customOption = document.createElement("option");
+  customOption.value = "custom";
+  customOption.textContent = "我的导入声音";
+  $("category").append(customOption);
+  F.levels.forEach((level) => {
+    const o = document.createElement("option");
+    o.value = level.index;
+    o.textContent = `${level.left} / ${level.right}`;
+    $("scene-choice").append(o);
+  });
+  $("category").onchange = renderSounds;
+  $("scene-choice").onchange = () =>
+    mutate(() => (project.scene = Number($("scene-choice").value)));
+  $("play").onclick = () => (playing ? stop() : play());
+  $("restart").onclick = () => {
+    stop(false);
+    position = 0;
+    play();
+  };
+  $("seek").oninput = () => {
+    const resume = playing;
+    stop(false);
+    position = Number($("seek").value);
+    if (resume) play();
+    else draw();
+  };
+  $("volume").oninput = () => {
+    if (master)
+      master.gain.setTargetAtTime(
+        Number($("volume").value),
+        audioContext.currentTime,
+        0.02,
+      );
+  };
+  document
+    .querySelectorAll("[data-view]")
+    .forEach((b) => (b.onclick = () => setView(b.dataset.view)));
+  $("add-clip").onclick = () => {
+    const t = Number($("add-time").value);
+    if (!Number.isFinite(t) || t < 0 || t >= project.duration) {
+      say("添加位置需要在作品时长以内。");
+      return;
+    }
+    if (project.clips.length >= F.MAX_CLIPS) {
+      say("最多 64 个片段，请删除一些再添加。");
+      return;
+    }
+    mutate(() => {
+      const c = F.defaultClip(selectedSound, t, project.clips.length % 3);
+      c.trimEnd = Math.min(c.trimEnd, soundOf(selectedSound).duration);
+      project.clips.push(c);
+      selectedClip = c.id;
+    });
+  };
+  $("timeline").onclick = (e) => {
+    if (e.target === e.currentTarget) {
+      const r = e.currentTarget.getBoundingClientRect();
+      $("add-time").value = Math.max(
+        0,
+        Math.min(
+          project.duration - 0.05,
+          ((e.clientX - r.left) / r.width) * project.duration,
+        ),
+      ).toFixed(2);
+    }
+  };
+  $("reset-project").onclick = () =>
+    mutate(() => {
+      project.clips = [];
+      selectedClip = null;
+      position = 0;
+    });
+  $("check").onclick = () => {
+    try {
+      F.validateProject(project);
+      if (mode === "free") {
+        $("result").textContent = project.clips.length
+          ? "作品结构有效，可以导出。试听后再决定是否满意。"
+          : "作品还没有声音，先添加一个片段。";
+        return;
+      }
+      const r = F.evaluate(project, currentLevel());
+      renderRequirements(true);
+      $("result").textContent = r.passed
+        ? "✓ 条件全部满足。接着试试盲听与 A / B 切换，再记录你的联想。"
+        : `已满足 ${r.score}% 条件。检查未打勾的时间点与音色类别。`;
+      if (r.passed && !completed.includes(project.levelId)) {
+        completed.push(project.levelId);
+        save();
+        renderNav();
+      }
+    } catch (e) {
+      say(e.message);
+    }
+  };
+  $("hint").onclick = () => {
+    const l = currentLevel();
+    $("hint-text").textContent =
+      `先选“${F.groups.find((g) => g[0] === l.events[0].categories[0])[1]}”类音色，在 ${l.events.map((e) => e.time).join("、")} 秒添加。每个命中片段音量 ≥ 0.10、时长 ≥ 0.06 秒。${l.rule?.type === "repeat" ? "用一个片段重复 4 次，间距 1 秒。" : l.rule?.type === "speed" ? "把一个命中片段的播放速度改为 1.5。" : l.rule?.type === "trim" ? "把一个命中片段的音源起点改为 0.12 秒。" : "听觉联想没有标准答案；换音色比较也能满足条件。"}`;
+  };
+  $("example").onclick = () =>
+    mutate(() => {
+      const keepNote = project.note;
+      project = F.example(currentLevel());
+      project.note = keepNote;
+      selectedClip = project.clips[0]?.id;
+      position = 0;
+      say("已放入示例；可撤销，也可以换音色做自己的版本。");
+    });
+  $("note").oninput = () => {
+    project.note = $("note").value;
+    save();
+  };
+  $("free-mode").onclick = () => {
+    stop(false);
+    save();
+    const start = clone(project);
+    mode = "free";
+    project = storage.free
+      ? clone(storage.free)
+      : { ...start, levelId: null, title: "我的声音实验" };
+    project.levelId = null;
+    position = 0;
+    undoStack = [];
+    selectedClip = null;
+    save();
+    render();
+  };
+  $("export-project").onclick = () =>
+    download(
+      JSON.stringify(F.validateProject(project), null, 2),
+      filename() + ".foley.json",
+      "application/json",
+    );
+  $("export-wav").onclick = () => {
+    if (!project.clips.length) {
+      say("先添加声音再导出。");
+      return;
+    }
+    download(
+      F.wav(F.renderMix(project, getSamples)),
+      filename() + ".wav",
+      "audio/wav",
+    );
+    say("已导出 24 kHz / 16-bit 单声道 WAV。");
+  };
+  $("export-html").onclick = () => {
+    if (!project.clips.length) {
+      say("先添加声音再导出。");
+      return;
+    }
+    exportHTML();
+  };
+  $("open-project").onclick = () => $("project-file").click();
+  $("project-file").onchange = async () => {
+    const file = $("project-file").files[0];
+    if (!file) return;
+    try {
+      if (file.size > 4 * 1024 * 1024) throw Error("挑战包超过 4 MB 上限");
+      const valid = F.validateProject(JSON.parse(await file.text()));
+      stop(false);
+      save();
+      mode = valid.levelId ? "challenge" : "free";
+      project = valid;
+      selectedClip = null;
+      selectedSound = "s0";
+      position = 0;
+      undoStack = [];
+      samples.clear();
+      save();
+      render();
+      say("挑战包已导入。");
+    } catch (e) {
+      say("导入失败：" + e.message);
+    } finally {
+      $("project-file").value = "";
+    }
+  };
+  $("import-audio").onclick = () => $("audio-file").click();
+  $("audio-file").onchange = async () => {
+    const file = $("audio-file").files[0];
+    if (!file) return;
+    try {
+      if (project.custom.length >= 4) throw Error("每个作品最多导入 4 个音色");
+      if (file.size > 12 * 1024 * 1024) throw Error("音频文件超过 12 MB 上限");
+      const ctx = await context(),
+        decoded = await ctx.decodeAudioData(await file.arrayBuffer());
+      if (decoded.duration > 10) throw Error("请先裁成 10 秒以内的短音效");
+      if (decoded.duration < 0.02) throw Error("音频太短");
+      const offline = new OfflineAudioContext(
+          1,
+          Math.ceil(decoded.duration * F.RATE),
+          F.RATE,
+        ),
+        s = offline.createBufferSource();
+      s.buffer = decoded;
+      s.connect(offline.destination);
+      s.start();
+      const output = await offline.startRendering(),
+        pcm = new Uint8Array(output.length * 2),
+        dv = new DataView(pcm.buffer),
+        data = output.getChannelData(0);
+      for (let i = 0; i < data.length; i++)
+        dv.setInt16(
+          i * 2,
+          Math.round(Math.max(-1, Math.min(1, data[i])) * 32767),
+          true,
+        );
+      const custom = {
+        id: "u-" + Date.now(),
+        name: file.name.slice(0, 40),
+        duration: data.length / F.RATE,
+        category: "custom",
+        origin: "用户导入",
+        pcm: encodeBytes(pcm),
+      };
+      mutate(() => {
+        project.custom.push(custom);
+        selectedSound = custom.id;
+      });
+      $("category").value = "custom";
+      renderSounds();
+      say(
+        "音频已导入，保存在作品内。自带音色用于自由创作，不计入指定类别条件。",
+      );
+    } catch (e) {
+      say("音频导入失败：" + e.message);
+    } finally {
+      $("audio-file").value = "";
+    }
+  };
+  $("help").onclick = () => $("help-dialog").showModal();
+  $("close-help").onclick = () => $("help-dialog").close();
+  $("start-tutorial").onclick = () => {
+    $("help-dialog").close();
+    loadLevel(0);
+    $("hint").click();
+  };
+  document.addEventListener("keydown", (e) => {
+    if (
+      e.code === "Space" &&
+      !/INPUT|TEXTAREA|SELECT|BUTTON/.test(document.activeElement.tagName) &&
+      !$("help-dialog").open
+    ) {
+      e.preventDefault();
+      playing ? stop() : play();
+    }
+  });
+  let first = true;
+  try {
+    const data = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (data && data.storage) {
+      for (const [key, value] of Object.entries(data.storage)) {
+        try {
+          storage[key] = F.validateProject(value);
+        } catch {}
+      }
+      completed = Array.isArray(data.completed)
+        ? [
+            ...new Set(
+              data.completed.filter((id) => F.levels.some((l) => l.id === id)),
+            ),
+          ]
+        : [];
+      if (storage[data.active]) {
+        project = clone(storage[data.active]);
+        mode = data.active === "free" ? "free" : "challenge";
+      }
+      first = false;
+    }
+  } catch {}
+  render();
+  requestAnimationFrame(frame);
+  if (first) $("help-dialog").showModal();
+  window.FoleyApp = {
+    getProject: () => clone(project),
+    getPlayback: () => ({ playing, position: now(), view }),
+    exportHTML,
+  };
 })();
